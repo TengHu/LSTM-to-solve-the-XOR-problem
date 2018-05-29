@@ -2,7 +2,6 @@ from __future__ import unicode_literals, print_function, division
 from io import open
 import glob
 import torch
-import pylab
 import torch.nn.functional as F
 import torchvision.models as models
 import random
@@ -10,115 +9,128 @@ import numpy as np
 from torch.autograd import Variable
 import torch.optim as optim
 import torch.nn as nn
-import matplotlib.pyplot as plt
-import unicodedata
-import string
-import time
-import math
-import matplotlib.ticker as ticker
-import torch.utils.data as data_utils
-import shutil
-import pdb
-import torch.multiprocessing as mp
-import pickle
+import argparse
+import models
 
 torch.manual_seed(1)
 
-###############################################################################                                                                                                                                                                        
-# Helper Functions                                                                                                                                                                                                                                     
-###############################################################################                                                                                                                                                                        
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+###############################################################################
+parser = argparse.ArgumentParser(description='RNN predict parity bit')
+
+parser.add_argument(
+    '--input',
+    type=str,
+    default='./output',
+    help='location of the data corpus')
+
+parser.add_argument('--epochs', type=int, default=3, help='# of epochs')
+
+args = parser.parse_args()
+
+###############################################################################
+# Load Data
+###############################################################################
+
+"""sequence -> training data """
+data = {}
+with open(args.input,  encoding="utf-8") as f:
+    for line in f:
+        sequence = len(line.rstrip())
+        idx = np.zeros((1, sequence, 1), dtype=np.int64)
+        for i in range(0, sequence):
+            idx[0][i] = line[i]
+        idx = torch.LongTensor(idx)
+
+        if sequence in data:
+            data[sequence] = torch.cat((data[sequence], idx), dim=0)
+        else:
+            data[sequence] = idx
 
 
-def generate_binary_string(length=1):
-    sum = 0
-    s = ""
-    for i in range(0, length):
-        temp = random.randint(0, 1)
-        sum += temp
-        s += str(temp)
-    return (s, sum % 2)
 
+###############################################################################
+# Build the model
+###############################################################################
+hidden_size = 2
+model = models.simpleRNN(1, hidden_size).to(device)
 
-## Output: (Sequence, Batch Size, 1)                                                                                                                                                                                                                   
-def string2tensor(binary_string):
-    tensor = np.zeros((len(binary_string), 1, 1), dtype=np.float32)
-    for i in range(len(binary_string)):
-        tensor[i][0][0] = int(binary_string[i])
-    return torch.Tensor(tensor)
+###############################################################################
+# Training
+###############################################################################
 
-
-###############################################################################                                                                                                                                                                        
-# Load Data                                                                                                                                                                                                                                            
-###############################################################################                                                                                                                                                                        
-
-num_samples = 100
-length = 50
-for i in range(0, num_samples):
-    data = torch.cat(string2tensor(generate_binary_string(length)), dim=1)
-
-###############################################################################                                                                                                                                                                        
-# Build the model                                                                                                                                                                                                                                      
-###############################################################################   
-
-class ParityGenerator(nn.Module):
-    def __init__(self, batch_size, hidden_size):
-        super(ParityGenerator, self).__init__()
-        self.batch_size = batch_size
-        self.hidden_size = hidden_size
-        self.lstm = nn.LSTM(input_size=2, hidden_size=hidden_size)
-        self.h2o = nn.Linear(hidden_size, 2)
-
-    def forward(self, input, hidden):
-        outputs, __ = self.lstm(input, hidden)
-        return self.h2o(outputs[0])
-
-    def initHidden(self):
-        return (
-            Variable(
-                torch.randn(
-                    1, self.batch_size,
-                    self.hidden_size).pin_memory().cuda(non_blocking=True)),
-            Variable(
-                torch.randn(
-                    1, self.batch_size,
-                    self.hidden_size).pin_memory().cuda(non_blocking=True)))
-
-###############################################################################                                                                                                                                                                        
-# Training                                                                                                                                                                                                                                             
-###############################################################################                                                                                                                                                                        
-epochs = 3
-batch_size = 100
-hidden_size = 200
-
-
-def train(epoch_iter, model, data):
-    all_losses = []
-    total_loss = 0
-
-    iters = int(data.shape[1] / batch_size)
-
+optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+criterion = nn.NLLLoss().to(device)
 
 start = time.time()
+all_losses = []
 
-model = ParityGenerator(batch_size, hidden_size)
 
-## shuffle data                                                                                                                                                                                                                                        
-## get validation data                                                                                                                                                                                                                                 
 
-for epoch_iter in range(0, epochs):
-    # training                                                                                                                                                                                                                                         
-    train(epoch_iter, model, data)
+def train(data):
+    length = data.shape[1]  # number of chars per batch
+    losses = []
+    total_loss = 0
+    hiddens = model.initHidden(layer=3, batch_size=args.batch_size)
 
-    # validation                                                                                                                                                                                                                                       
-    #validate(model)                                                                                                                                                                                                                                   
+    for batch_idx, idx in enumerate(range(0, length - args.bptt, args.bptt)):
+        inputs, targets = get_batch(data, idx)
+        detach(hiddens)
 
-print(string2tensor(generate_binary_string(3)[0]))
+        optimizer.zero_grad()
 
-end = time.time()
-print("Training finished ! Takes {} seconds ".format(end - start))
+        outputs, hiddens = model(inputs, hiddens)
+        loss = get_loss(outputs, targets)
+        loss.backward()
 
-###############################################################################                                                                                                                                                                        
-# Testing                                                                                                                                                                                                                                              
-###############################################################################                                                                                                                                                                        
+        torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
+        optimizer.step()
+        total_loss += loss.item()
 
-## generate data                               
+        if batch_idx % args.print_every == 0 and batch_idx > 0:
+            print(
+                "Epoch : {} / {}, Iteration {} / {}, Loss every {} iteration :  {}, Takes {} Seconds".
+                format(epoch, args.epochs, batch_idx,
+                       int((length - args.bptt) / args.bptt), args.print_every,
+                       loss.item(),
+                       time.time() - start))
+
+        if batch_idx % args.plot_every == 0 and batch_idx > 0:
+            losses.append(total_loss / args.plot_every)
+            total_loss = 0
+
+        if batch_idx % args.sample_every == 0 and batch_idx > 0:
+            sample(warm_up_text)
+
+        if batch_idx % args.save_every == 0 and batch_idx > 0:
+            save_checkpoint({
+                'epoch': epoch,
+                'iter': batch_idx,
+                'losses': losses,
+                'state_dict': model.state_dict(),
+                'optimizer': optimizer.state_dict(),
+            }, "checkpoint_{}_epoch_{}_iteration_{}.{}.pth".format(
+                int(time.time()), epoch, batch_idx, model_type))
+        del loss, outputs
+
+    return losses
+
+
+
+def get_shuffled_data(data):
+    pass
+    #return train_data, valid_data
+
+
+
+try:
+    for epoch in range(1, args.epochs + 1):
+        train_data, valid_data = get_shuffled_data(data)
+           
+except KeyboardInterrupt:
+    print('#' * 90)
+    print('Exiting from training early')
+
+print('#' * 90)
+print("Training finished ! Takes {} seconds ".format(time.time() - start))
