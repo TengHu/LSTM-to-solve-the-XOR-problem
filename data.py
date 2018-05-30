@@ -4,13 +4,12 @@ import numpy as np
 import argparse
 import random
 
-
 parser = argparse.ArgumentParser(description='Generating binary strings')
 
 parser.add_argument(
     '--output',
     type=str,
-    default='./output',
+    default='binary_string',
     help='location of the data corpus')
 
 parser.add_argument(
@@ -29,7 +28,6 @@ parser.add_argument(
     help='number of samples generated')
 
 args = parser.parse_args()
-
     
 def generate_binary(length=1):
     sum = 0
