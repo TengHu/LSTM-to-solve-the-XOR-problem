@@ -81,8 +81,8 @@ def get_data(path):
             target_id = torch.LongTensor(np.zeros((1), dtype=np.int64))
             target_id[0] = int(line[-1]) # Use Tensor constructor
                 
-            ids = torch.Tensor(ids).unsqueeze_(0).to(device)
-            target_id.unsqueeze_(0).to(device)
+            ids = torch.Tensor(ids).unsqueeze_(0)
+            target_id.unsqueeze_(0)
 
             if sequence in data:
                 data[sequence] = torch.cat((data[sequence], ids), dim=0)
@@ -92,9 +92,11 @@ def get_data(path):
                 targets[sequence] = target_id
     return data, targets
 
+
+print ("Loading Data")
 train_data, train_targets = get_data(args.train)
 test_data, test_targets = get_data(args.test)
-
+print ("Finished Loading Data")
 ###############################################################################
 # Build the model
 ##############################################################################
@@ -109,6 +111,7 @@ model = models.simpleLSTM(feature_size, hidden_size).to(device)
 
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 criterion = nn.NLLLoss().to(device)
+torch.backends.cudnn.benchmark = True
 
 start = time.time()
 
@@ -129,9 +132,14 @@ def evaluate(features, targets):
     correct = 0;
     for seq in features:
         test_data = torch.utils.data.TensorDataset(features[seq], targets[seq])
-        test_loader = torch.utils.data.DataLoader(test_data, args.batch_size, shuffle=True, drop_last=True)
+        test_loader = torch.utils.data.DataLoader(test_data, args.batch_size, shuffle=True, drop_last=True, pin_memory=True)
         for i, data in enumerate(test_loader, 0):
             input, targets = data
+            
+            input = input.to(device)
+            targets = targets.to(device)
+
+            
             hiddens = model.initHidden(layer=1, batch_size=args.batch_size)
             output, _ = model(input, hiddens)
             cnt += input.shape[0]
@@ -145,12 +153,17 @@ def evaluate(features, targets):
 
 def train(features, targets):
     train_data = torch.utils.data.TensorDataset(features, targets)
-    train_loader = torch.utils.data.DataLoader(train_data, args.batch_size, shuffle=True, drop_last=True)
+    train_loader = torch.utils.data.DataLoader(train_data, args.batch_size, shuffle=True, drop_last=True, pin_memory=True)
     total_loss = 0
     loss = 0
         
     for i, data in enumerate(train_loader, 0):
         input, targets = data
+
+        input = input.to(device)
+        targets = targets.to(device)
+
+
         optimizer.zero_grad()
         hiddens = model.initHidden(layer=1, batch_size=args.batch_size)
         output, hiddens = model(input, hiddens)
