@@ -73,10 +73,13 @@ def get_data(path):
         for line in f:
             line = line.rstrip()
             sequence = len(line)-1
-            ids = np.zeros((sequence, 2), dtype=np.int64)
+            ids = np.zeros((sequence, 3), dtype=np.int64)
 
+            buf = 0
             for i in range(0, sequence):
+                buf += int(line[i])
                 ids[i][int(line[i])] = 1
+                ids[i][2] = buf % 2
             
             target_id = torch.LongTensor(np.zeros((1), dtype=np.int64))
             target_id[0] = int(line[-1]) # Use Tensor constructor
@@ -97,12 +100,14 @@ print ("Loading Data")
 train_data, train_targets = get_data(args.train)
 test_data, test_targets = get_data(args.test)
 print ("Finished Loading Data")
+
+
 ###############################################################################
 # Build the model
 ##############################################################################
 
-feature_size = 2
-hidden_size = 2
+feature_size = 3
+hidden_size = 10
 model = models.simpleLSTM(feature_size, hidden_size).to(device)
 
 ###############################################################################
@@ -148,12 +153,12 @@ def evaluate(features, targets):
                 id = torch.multinomial(output_prob[j], num_samples=1).item()
                 correct += (id == targets[j].numpy()[0])
 
-    pdb.set_trace()
     return correct / cnt
 
 def train(features, targets):
     train_data = torch.utils.data.TensorDataset(features, targets)
     train_loader = torch.utils.data.DataLoader(train_data, args.batch_size, shuffle=True, drop_last=True, pin_memory=True)
+    losses = []
     total_loss = 0
     loss = 0
         
@@ -163,7 +168,6 @@ def train(features, targets):
         input = input.to(device)
         targets = targets.to(device)
 
-
         optimizer.zero_grad()
         hiddens = model.initHidden(layer=1, batch_size=args.batch_size)
         output, hiddens = model(input, hiddens)
@@ -171,7 +175,12 @@ def train(features, targets):
         loss.backward()
         optimizer.step()
         total_loss += loss.item()
-        
+
+        if i % 5 == 0 and i > 0:
+            losses.append(total_loss / 5)
+            total_loss = 0
+
+
         if i % args.print_every == 0 and i > 0:
             print(
                 "Epoch : {} / {}, Iteration {} / {}, Loss every {} iteration :  {}, Takes {} Seconds".
@@ -179,19 +188,26 @@ def train(features, targets):
                        loss.item(),
                        time.time() - start))
         del loss, output
-    return total_loss
+    return losses
 
 try:
+    all_losses = [] 
     for epoch in range(1, args.epochs + 1):
         for seq in train_data:
             loss = train(train_data[seq], train_targets[seq])
-            print("Epoch {} Finished,  Total loss : {}\n".format(epoch, loss))
+            all_losses += loss
+            print("Epoch {} Finished \n".format(epoch))
             
 except KeyboardInterrupt:
     print('#' * 90)
     print('Exiting from training early')
 
-print("Testing finished ! Accuracy : {} % ".format(evaluate(test_data, test_targets) * 100))
 
+torch.save({'state_dict': model.state_dict()}, "model")
+with open("losses", 'w') as f:
+    f.write(str(all_losses))
+
+
+print("Testing finished ! Accuracy : {} % ".format(evaluate(test_data, test_targets) * 100))
 print('#' * 90)
 print("Training finished ! Takes {} seconds ".format(time.time() - start))
